@@ -395,10 +395,10 @@ st.title("🪬 SEER in-SIGHTS")
 st.subheader("🆂earch 🅴ngine techniques for 🅴ntity 🆁esolution")
 # st.caption(f"Data source location: `{engine['data_location']}`")
 
-st.badge(label = "github", color = "violet")
-st.badge(label = "huggingface", color = "yellow")
-st.badge(label = "streamlit", color = "green")
-st.badge(label = "letterboxd", color = "red")
+# st.badge(label = "github", color = "violet")
+# st.badge(label = "huggingface", color = "yellow")
+# st.badge(label = "streamlit", color = "green")
+# st.badge(label = "letterboxd", color = "red")
 
 tab_source, tab_role, tab_decade, tab_lang, tab_origin = st.tabs([
     "By Source", "By Role", "By Decade", "By Language", "By Origin"
