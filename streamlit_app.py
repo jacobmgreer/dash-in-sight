@@ -18,20 +18,22 @@ import streamlit as st
 
 st.set_page_config(
     page_title="In-SIGHTS",
-    page_icon=":nazar_amulet:",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
 TYPE_CONTENT = 1
 TYPE_CREATOR = 2
+
 HF_DATASET_URI = "hf://datasets/jacobmgreer/in-sight/**/*.parquet"
 MACRO_DIR = "macros"
 
 def resolve_dataset_location() -> str:
+
     """
     Checks local disk for Parquet shards first; falls back to Hugging Face remote URI.
     """
+
     candidate_paths = ["data/*.parquet"]
     for path in candidate_paths:
         if glob.glob(path):
@@ -44,13 +46,15 @@ def resolve_dataset_location() -> str:
 
 @st.cache_resource
 def get_engine_state():
+
     """
     Initializes in-memory DuckDB connection, registers SQL macros, materializes
     dimension tables, auto-detects Parquet schema, and loads the dataset into RAM.
     """
+
     con = duckdb.connect(database=":memory:", read_only=False)
     
-    # Configure network resilience and extensions
+    # Configure duckdb settings, network preferecnes, and extensions
     con.execute("INSTALL httpfs; LOAD httpfs;")
     con.execute("SET http_timeout = 120000;")
     con.execute("SET http_retries = 5;")
@@ -67,7 +71,15 @@ def get_engine_state():
 
     # 2. Extract bit mappings from DuckDB macros
     def load_bits(macro_name: str) -> dict:
-        df = con.execute(f"SELECT bit, value FROM {macro_name}() ORDER BY bit DESC").df()
+        
+        df = con.execute(
+            f"""
+            SELECT bit, value 
+            FROM {macro_name}() 
+            ORDER BY bit DESC
+            """
+        ).df()
+        
         return dict(zip(df["value"].astype(str), df["bit"].astype(int)))
 
     decade_bits = load_bits("get_decade_mapping")
@@ -79,11 +91,19 @@ def get_engine_state():
 
     # 3. Create dimension lookup tables
     def build_dim_table(table_name: str, bits_dict: dict, numeric_val: bool = False):
+
         values_sql = ", ".join(
             f"({bit}, {val if numeric_val else f'{val!r}'})"
             for val, bit in bits_dict.items()
         )
-        con.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT bit, value FROM (VALUES {values_sql}) AS t(bit, value)")
+
+        con.execute(
+            f"""
+            CREATE OR REPLACE TABLE {table_name} AS 
+            SELECT bit, value 
+            FROM (VALUES {values_sql}) AS t(bit, value)
+            """
+        )
 
     build_dim_table("dim_decade", decade_bits, numeric_val=True)
     build_dim_table("dim_role", role_bits)
@@ -91,7 +111,13 @@ def get_engine_state():
     build_dim_table("dim_origin", origin_bits)
 
     source_rows = ", ".join(f"({bit}, '{name}')" for name, bit in source_id_to_name.items())
-    con.execute(f"CREATE OR REPLACE TABLE dim_source AS SELECT bit, value FROM (VALUES {source_rows}) AS t(bit, value)")
+    con.execute(
+        f"""
+        CREATE OR REPLACE TABLE dim_source AS 
+        SELECT bit, value 
+        FROM (VALUES {source_rows}) AS t(bit, value)
+        """
+    )
 
     # 4. Resolve Parquet schema dynamically
     data_loc = resolve_dataset_location()
@@ -105,7 +131,6 @@ def get_engine_state():
         raise ValueError(f"Could not find {label}. Tried: {candidates}")
 
     schema = {
-        "id": pick_col(["big", "id"], "ID column"),
         "type": pick_col(["type"], "Type column"),
         "decades": pick_col(["decades"], "Decade bitmask"),
         "source": pick_col(["source"], "Source column"),
@@ -128,14 +153,16 @@ def get_engine_state():
         """
         return con.execute(sql).df()["val"].tolist()
 
-    sources_df = con.execute(f"""
+    sources_df = con.execute(
+        f"""
         SELECT DISTINCT p.{schema['source']} AS source_id,
                COALESCE(d.value, 'Source ' || CAST(p.{schema['source']} AS VARCHAR)) AS source_name
         FROM nc_data p
         LEFT JOIN dim_source d ON p.{schema['source']} = d.bit
         WHERE p.{schema['source']} IS NOT NULL
         ORDER BY source_name
-    """).df()
+        """
+    ).df()
 
     filter_choices = {
         "decades": [int(x) for x in get_distinct_dim_values(schema["decades"], "dim_decade")],
@@ -168,21 +195,35 @@ filter_choices = engine["filter_choices"]
 # =============================================================================
 
 def build_bitmask_clause(selected_values: list, bitmask_col: str, bits_dict: dict) -> str:
+    
     """Generates bitwise AND filtering clause for multi-select bitmask values."""
+    
     if not selected_values:
         return ""
+    
     positions = [bits_dict[str(v)] for v in selected_values if str(v) in bits_dict]
+    
     if not positions:
         return ""
+    
     mask_val = sum(1 << pos for pos in positions)
+    
     return f" AND ((COALESCE({bitmask_col}, 0)::BIGINT & {mask_val}::BIGINT) <> 0)"
 
 def build_filter_clauses(filters: dict) -> str:
-    """Translates UI widget states into parameter-safe SQL predicate strings."""
-    clauses = []
     
+    """Translates UI widget states into parameter-safe SQL predicate strings."""
+    
+    clauses = []
+
+    # Record type filter
+    if selected_record_type is not None:
+        type_val = TYPE_CONTENT if selected_record_type == "CONTENT" else TYPE_CREATOR
+        clauses.append(f" AND {schema['type']} = {type_val}")
+
     # Source filter
     selected_sources = filters.get("sources", [])
+
     if not selected_sources:
         clauses.append(" AND 1=0")
     elif len(selected_sources) < len(filter_choices["sources"]):
@@ -203,11 +244,14 @@ def build_filter_clauses(filters: dict) -> str:
     clauses.append(build_bitmask_clause(filters.get("origins", []), schema["origins"], engine["origin_bits"]))
     clauses.append(build_bitmask_clause(filters.get("roles", []), schema["roles"], engine["role_bits"]))
 
-    return "".join(clauses)
+    return " ".join(clauses)
 
 def graph_match_expr(graph_name: str, alias: str = None) -> str:
+
     prefix = f"{alias}." if alias else ""
+
     bit_pos = graph_bits[graph_name]
+
     return f"((COALESCE({prefix}{schema['graph_col']}, 0)::BIGINT & (1::BIGINT << {bit_pos})) <> 0)"
 
 # =============================================================================
@@ -216,86 +260,95 @@ def graph_match_expr(graph_name: str, alias: str = None) -> str:
 
 @st.cache_data
 def query_overview(_con, filter_clause: str) -> pd.DataFrame:
+
     base_expr = graph_match_expr("base")
     disc_expr = graph_match_expr("discovery")
-    id_col = schema["id"]
+
     type_col = schema["type"]
 
-    sql = f"""
+    return con.execute(
+        f"""
         WITH filtered AS (
-            SELECT {id_col}, {type_col}, {schema['graph_col']}
+            SELECT {type_col}, {schema['graph_col']}
             FROM nc_data
             WHERE 1=1 {filter_clause}
         )
         SELECT
-            COUNT(DISTINCT {id_col}) FILTER (WHERE {type_col} = 1) AS total_content,
-            COUNT(DISTINCT {id_col}) FILTER (WHERE {type_col} = 1 AND {base_expr}) AS base_content,
-            COUNT(DISTINCT {id_col}) FILTER (WHERE {type_col} = 1 AND {disc_expr}) AS disc_content,
 
-            COUNT(DISTINCT {id_col}) FILTER (WHERE {type_col} = 2) AS total_creator,
-            COUNT(DISTINCT {id_col}) FILTER (WHERE {type_col} = 2 AND {base_expr}) AS base_creator,
-            COUNT(DISTINCT {id_col}) FILTER (WHERE {type_col} = 2 AND {disc_expr}) AS disc_creator
+            COUNT(*) FILTER (WHERE {type_col} = 1) AS total_content,
+            COUNT(*) FILTER (WHERE {type_col} = 1 AND {base_expr}) AS base_content,
+            COUNT(*) FILTER (WHERE {type_col} = 1 AND {disc_expr}) AS disc_content,
+
+            COUNT(*) FILTER (WHERE {type_col} = 2) AS total_creator,
+            COUNT(*) FILTER (WHERE {type_col} = 2 AND {base_expr}) AS base_creator,
+            COUNT(*) FILTER (WHERE {type_col} = 2 AND {disc_expr}) AS disc_creator,
+
         FROM filtered
-    """
-    return con.execute(sql).df()
+        """
+    ).df()
 
 @st.cache_data
-def query_dimension(_con, entity: str, dim_table: str, bitmask_col: str, filter_clause: str) -> pd.DataFrame:
-    type_val = TYPE_CONTENT if entity == "content" else TYPE_CREATOR
-    id_col = schema["id"]
-    total_col = f"total_{entity}"
+def query_dimension(_con, dim_table: str, bitmask_col: str, filter_clause: str) -> pd.DataFrame:
+
     base_expr = graph_match_expr("base", "f")
     disc_expr = graph_match_expr("discovery", "f")
 
-    sql = f"""
+    return con.execute(
+        f"""
         WITH filtered AS (
-            SELECT * FROM nc_data WHERE {schema['type']} = {type_val} {filter_clause}
+            SELECT * 
+            FROM nc_data 
+            WHERE 1=1 {filter_clause}
         )
         SELECT
             d.value AS grouping,
-            COUNT(DISTINCT CASE WHEN {base_expr} THEN f.{id_col} END) AS base_matched,
-            COUNT(DISTINCT CASE WHEN {disc_expr} THEN f.{id_col} END) AS disc_matched,
-            COUNT(DISTINCT CASE WHEN NOT ({disc_expr}) THEN f.{id_col} END) AS unmatched,
-            COUNT(DISTINCT f.{id_col}) AS {total_col}
+            COUNT(*) FILTER (WHERE {base_expr}) AS base_matched,
+            COUNT(*) FILTER (WHERE {disc_expr}) AS disc_matched,
+            COUNT(*) FILTER (WHERE NOT {disc_expr}) AS unmatched,
+            COUNT(*) AS total,
         FROM filtered f
         JOIN {dim_table} d ON (COALESCE(f.{bitmask_col}, 0)::BIGINT & (1::BIGINT << d.bit)) <> 0
         GROUP BY d.value
-        ORDER BY {total_col} DESC
-    """
-    return con.execute(sql).df()
+        ORDER BY total DESC
+        """
+    ).df()
 
 @st.cache_data
-def query_by_source(_con, entity: str, filter_clause: str) -> pd.DataFrame:
-    type_val = TYPE_CONTENT if entity == "content" else TYPE_CREATOR
-    id_col = schema["id"]
-    total_col = f"total_{entity}"
+def query_by_source(_con, filter_clause: str) -> pd.DataFrame:
+
     base_expr = graph_match_expr("base", "f")
     disc_expr = graph_match_expr("discovery", "f")
+
     src_col = schema["source"]
 
-    sql = f"""
+    return con.execute(
+        f"""
         WITH filtered AS (
-            SELECT * FROM nc_data WHERE {schema['type']} = {type_val} {filter_clause}
+            SELECT * 
+            FROM nc_data 
+            WHERE 1=1 {filter_clause}
         )
         SELECT
             COALESCE(s.value, 'Source ' || CAST(f.{src_col} AS VARCHAR)) AS source,
-            COUNT(DISTINCT CASE WHEN {base_expr} THEN f.{id_col} END) AS base_matched,
-            COUNT(DISTINCT CASE WHEN {disc_expr} THEN f.{id_col} END) AS disc_matched,
-            COUNT(DISTINCT CASE WHEN NOT ({disc_expr}) THEN f.{id_col} END) AS unmatched,
-            COUNT(DISTINCT f.{id_col}) AS {total_col},
+            COUNT(*) FILTER (WHERE {base_expr}) AS base_matched,
+            COUNT(*) FILTER (WHERE {disc_expr}) AS disc_matched,
+            COUNT(*) FILTER (WHERE NOT {disc_expr}) AS unmatched,
+            COUNT(*) AS total
         FROM filtered f
         LEFT JOIN dim_source s ON f.{src_col} = s.bit
         GROUP BY 1
-        ORDER BY {total_col} DESC
-    """
-    return con.execute(sql).df()
+        ORDER BY total DESC
+        """
+    ).df()
 
 # =============================================================================
 # FORMATTING & PRESENTATION HELPERS
 # =============================================================================
 
-def format_summary_dataframe(df: pd.DataFrame, group_col_name: str, total_col: str) -> pd.DataFrame:
+def format_summary_dataframe(df: pd.DataFrame, group_col_name: str) -> pd.DataFrame:
+    
     """Formats raw count dataframes with percentage calculations and clean schema names."""
+    
     if df.empty:
         return pd.DataFrame()
 
@@ -303,19 +356,21 @@ def format_summary_dataframe(df: pd.DataFrame, group_col_name: str, total_col: s
     out[group_col_name] = df["grouping"] if "grouping" in df.columns else df[df.columns[0]]
     
     # Calculate percentages for connected graph cuts
-    out["Base %"] = (100 * df["base_matched"] / df[total_col]).map("{:.1f}%".format)
-    out["Base Connected"] = df["base_matched"].map("{:,}".format)
+    out["Base %"] = (100 * df["base_matched"] / df["total"]).map("{:.1f}%".format)
+    out["Base"] = df["base_matched"].map("{:,}".format)
 
-    out["Proposed %"] = (100 * df["disc_matched"] / df[total_col]).map("{:.1f}%".format)
-    out["Proposed Connected"] = df["disc_matched"].map("{:,}".format)
+    out["Proposed %"] = (100 * df["disc_matched"] / df["total"]).map("{:.1f}%".format)
+    out["Proposed"] = df["disc_matched"].map("{:,}".format)
 
     out["Unmatched"] = df["unmatched"].map("{:,}".format)
-    out["Total"] = df[total_col].map("{:,}".format)
+    out["Total"] = df["total"].map("{:,}".format)
 
     return out
 
 def render_overview_cards(df_ov: pd.DataFrame, entity_prefix: str):
+    
     """Renders total entity count metrics alongside match rate percentages."""
+    
     if df_ov.empty:
         st.warning("No data available for current filter selection.")
         return
@@ -335,6 +390,7 @@ def render_overview_cards(df_ov: pd.DataFrame, entity_prefix: str):
         delta=f"{base_m:,} connected / {total - base_m:,} unmatched",
         delta_color="off"
     )
+
     c2.metric(
         label="Proposed Graph",
         value=calc_pct(disc_m, total),
@@ -348,35 +404,51 @@ def render_overview_cards(df_ov: pd.DataFrame, entity_prefix: str):
 
 st.sidebar.title("Cross-Filters")
 
+selected_record_type = st.sidebar.selectbox(
+    label = "Record Scope",
+    options = [None, "CONTENT", "CREATOR"],
+    format_func = lambda x: "All" if x is None else x
+)
+
 selected_decade_from = st.sidebar.selectbox(
-    "From Decade",
-    options=[None] + filter_choices["decades"],
-    format_func=lambda x: "All" if x is None else f"{x}s"
+    label = "From Decade",
+    options = [None] + filter_choices["decades"],
+    format_func = lambda x: "All" if x is None else f"{x}s"
 )
 
 selected_decade_to = st.sidebar.selectbox(
-    "To Decade",
-    options=[None] + filter_choices["decades"],
-    format_func=lambda x: "All" if x is None else f"{x}s"
+    label = "To Decade",
+    options = [None] + filter_choices["decades"],
+    format_func = lambda x: "All" if x is None else f"{x}s"
 )
 
-selected_langs = st.sidebar.multiselect("Language(s)", options=filter_choices["langs"])
-selected_origins = st.sidebar.multiselect("Origin(s)", options=filter_choices["origins"])
-selected_roles = st.sidebar.multiselect("Role(s)", options=filter_choices["roles"])
+selected_langs = st.sidebar.multiselect(
+    label = "Language(s)", 
+    options = filter_choices["langs"]
+)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("Source Registries")
+selected_origins = st.sidebar.multiselect(
+    label = "Origin(s)", 
+    options = filter_choices["origins"]
+)
+
+selected_roles = st.sidebar.multiselect(
+    label = "Role(s)", 
+    options = filter_choices["roles"]
+)
 
 all_sources_dict = filter_choices["sources"]
 selected_sources = st.sidebar.multiselect(
-    "Select Sources",
-    options=list(all_sources_dict.values()),
-    default=list(all_sources_dict.values()),
-    format_func=lambda src_id: [k for k, v in all_sources_dict.items() if v == src_id][0]
+    label = "Select Sources",
+    options = list(all_sources_dict.values()),
+    default = list(all_sources_dict.values()),
+    placeholder = "SELECT SOURCES",
+    format_func = lambda src_id: [k for k, v in all_sources_dict.items() if v == src_id][0]
 )
 
 # Collect current filter state
 current_filters = {
+    "record_type": selected_record_type,
     "decade_from": selected_decade_from,
     "decade_to": selected_decade_to,
     "langs": selected_langs,
@@ -392,13 +464,20 @@ filter_sql = build_filter_clauses(current_filters)
 # =============================================================================
 
 st.title("🪬 SEER in-SIGHTS")
-st.subheader("🆂earch 🅴ngine techniques for 🅴ntity 🆁esolution")
-# st.caption(f"Data source location: `{engine['data_location']}`")
 
-# st.badge(label = "github", color = "violet")
-# st.badge(label = "huggingface", color = "yellow")
-# st.badge(label = "streamlit", color = "green")
-# st.badge(label = "letterboxd", color = "red")
+st.space()
+
+overview_df = query_overview(con, filter_sql)
+
+if selected_record_type != "CREATOR":
+    st.subheader("CONTENT")
+    render_overview_cards(overview_df, "content")
+
+if selected_record_type != "CONTENT":
+    st.subheader("CREATOR")
+    render_overview_cards(overview_df, "creator")
+
+st.space()
 
 tab_source, tab_role, tab_decade, tab_lang, tab_origin = st.tabs([
     "By Source", "By Role", "By Decade", "By Language", "By Origin"
@@ -408,30 +487,14 @@ tab_source, tab_role, tab_decade, tab_lang, tab_origin = st.tabs([
 # TAB 1: BY SOURCE
 # -----------------------------------------------------------------------------
 with tab_source:
-    st.space(size = "large")
-    st.space(size = "large")
 
-    overview_df = query_overview(con, filter_sql)
+    st.subheader("Records by Source(s)")
 
-    st.header("Content Entities")
-    render_overview_cards(overview_df, "content")
-    st.subheader("Content Records by Source")
-    df_src_content = query_by_source(con, "content", filter_sql)
     st.dataframe(
-        format_summary_dataframe(df_src_content, "Source", "total_content"),
-        width="stretch"
-    )
-
-    st.markdown("---")
-    st.space(size = "large")
-    st.space(size = "large")
-
-    st.header("Creator Entities")
-    render_overview_cards(overview_df, "creator")
-    st.subheader("Creator Records by Source")
-    df_src_creator = query_by_source(con, "creator", filter_sql)
-    st.dataframe(
-        format_summary_dataframe(df_src_creator, "Source", "total_creator"),
+        format_summary_dataframe(
+            query_by_source(con, filter_sql), 
+            "Source"
+        ),
         width="stretch"
     )
 
@@ -439,24 +502,14 @@ with tab_source:
 # TAB 2: BY ROLE
 # -----------------------------------------------------------------------------
 with tab_role:
-    st.space(size = "large")
-    st.space(size = "large")
     
-    st.header("Content Records by Credited Role(s)")
-    df_role_content = query_dimension(con, "content", "dim_role", schema["roles"], filter_sql)
-    st.dataframe(
-        format_summary_dataframe(df_role_content, "Role", "total_content"),
-        width="stretch"
-    )
+    st.subheader("Records by Credited Role(s)")
 
-    st.markdown("---")
-    st.space(size = "large")
-    st.space(size = "large")
-
-    st.header("Creator Records by Credited Role(s)")
-    df_role_creator = query_dimension(con, "creator", "dim_role", schema["roles"], filter_sql)
     st.dataframe(
-        format_summary_dataframe(df_role_creator, "Role", "total_creator"),
+        format_summary_dataframe(
+            query_dimension(con, "dim_role", schema["roles"], filter_sql), 
+            "Role"
+        ),
         width="stretch"
     )
 
@@ -464,24 +517,14 @@ with tab_role:
 # TAB 3: BY DECADE
 # -----------------------------------------------------------------------------
 with tab_decade:
-    st.space(size = "large")
-    st.space(size = "large")
 
-    st.header("Content Records by Decade")
-    df_dec_content = query_dimension(con, "content", "dim_decade", schema["decades"], filter_sql)
+    st.subheader("Records by Decade(s)")
+
     st.dataframe(
-        format_summary_dataframe(df_dec_content, "Decade", "total_content"),
-        width="stretch"
-    )
-
-    st.markdown("---")
-    st.space(size = "large")
-    st.space(size = "large")
-
-    st.header("Creator Records by Associated Content Decade(s)")
-    df_dec_creator = query_dimension(con, "creator", "dim_decade", schema["decades"], filter_sql)
-    st.dataframe(
-        format_summary_dataframe(df_dec_creator, "Decade", "total_creator"),
+        format_summary_dataframe(
+            query_dimension(con, "dim_decade", schema["decades"], filter_sql), 
+            "Decade"
+        ),
         width="stretch"
     )
 
@@ -489,24 +532,14 @@ with tab_decade:
 # TAB 4: BY LANGUAGE
 # -----------------------------------------------------------------------------
 with tab_lang:
-    st.space(size = "large")
-    st.space(size = "large")
 
-    st.header("Content Records by Language(s)")
-    df_lang_content = query_dimension(con, "content", "dim_lang", schema["langs"], filter_sql)
+    st.subheader("Records by Language(s)")
+
     st.dataframe(
-        format_summary_dataframe(df_lang_content, "Language", "total_content"),
-        width="stretch"
-    )
-
-    st.markdown("---")
-    st.space(size = "large")
-    st.space(size = "large")
-
-    st.header("Creator Records by Associated Content Language(s)")
-    df_lang_creator = query_dimension(con, "creator", "dim_lang", schema["langs"], filter_sql)
-    st.dataframe(
-        format_summary_dataframe(df_lang_creator, "Language", "total_creator"),
+        format_summary_dataframe(
+            query_dimension(con, "dim_lang", schema["langs"], filter_sql), 
+            "Language"
+        ),
         width="stretch"
     )
 
@@ -514,23 +547,13 @@ with tab_lang:
 # TAB 5: BY ORIGIN
 # -----------------------------------------------------------------------------
 with tab_origin:
-    st.space(size = "large")
-    st.space(size = "large")
     
-    st.header("Content Records by Origin(s)")
-    df_orig_content = query_dimension(con, "content", "dim_origin", schema["origins"], filter_sql)
-    st.dataframe(
-        format_summary_dataframe(df_orig_content, "Origin", "total_content"),
-        width="stretch"
-    )
+    st.subheader("Records by Origin(s)")
 
-    st.markdown("---")
-    st.space(size = "large")
-    st.space(size = "large")
-
-    st.header("Creator Records by Associated Content Origin(s)")
-    df_orig_creator = query_dimension(con, "creator", "dim_origin", schema["origins"], filter_sql)
     st.dataframe(
-        format_summary_dataframe(df_orig_creator, "Origin", "total_creator"),
+        format_summary_dataframe(
+            query_dimension(con, "dim_origin", schema["origins"], filter_sql), 
+            "Origin"
+        ),
         width="stretch"
     )
