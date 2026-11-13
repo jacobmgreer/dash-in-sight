@@ -130,10 +130,16 @@ def get_engine_state():
                 return c
         raise ValueError(f"Could not find {label}. Tried: {candidates}")
 
+    # Legacy exports (pre big_* rename) used type/source with 1-based source ids;
+    # normalize them on ingest so the rest of the app only sees the current schema
+    legacy_schema = "big_source" not in cols and "source" in cols
+    if legacy_schema:
+        cols = [c for c in cols if c not in ("type", "source")] + ["big_type", "big_source"]
+
     schema = {
-        "type": pick_col(["type"], "Type column"),
+        "type": pick_col(["big_type"], "Type column"),
+        "source": pick_col(["big_source"], "Source column"),
         "decades": pick_col(["decades"], "Decade bitmask"),
-        "source": pick_col(["source"], "Source column"),
         "langs": pick_col(["langs"], "Language bitmask"),
         "origins": pick_col(["origins"], "Origin bitmask"),
         "roles": pick_col(["roles"], "Role bitmask"),
@@ -141,7 +147,19 @@ def get_engine_state():
     }
 
     # 5. Ingest full Parquet dataset into in-memory DuckDB table
-    con.execute(f"CREATE TABLE nc_data AS SELECT * FROM read_parquet('{data_loc}');")
+    if legacy_schema:
+        con.execute(
+            f"""
+            CREATE TABLE nc_data AS
+            SELECT
+                * EXCLUDE (type, source),
+                big_type: type,
+                big_source: (source - 1)::TINYINT
+            FROM read_parquet('{data_loc}');
+            """
+        )
+    else:
+        con.execute(f"CREATE TABLE nc_data AS SELECT * FROM read_parquet('{data_loc}');")
 
     # 6. Pre-calculate distinct filter choices from dataset
     def get_distinct_dim_values(bitmask_col: str, dim_table: str) -> list:
