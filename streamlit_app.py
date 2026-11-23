@@ -84,6 +84,8 @@ def get_engine_state():
 
     decade_bits = load_bits("get_decade_mapping")
     role_bits = load_bits("get_role_mapping")
+    content_type_bits = load_bits("get_content_type_mapping")
+    genre_bits = load_bits("get_genre_mapping")
     lang_bits = load_bits("get_language_mapping")
     origin_bits = load_bits("get_origin_mapping")
     graph_bits = load_bits("get_comp_mapping")
@@ -109,6 +111,8 @@ def get_engine_state():
     build_dim_table("dim_role", role_bits)
     build_dim_table("dim_lang", lang_bits)
     build_dim_table("dim_origin", origin_bits)
+    build_dim_table("dim_genre", genre_bits)
+    build_dim_table("dim_content_type", content_type_bits)
 
     source_rows = ", ".join(f"({bit}, '{name}')" for name, bit in source_id_to_name.items())
     con.execute(
@@ -143,6 +147,8 @@ def get_engine_state():
         "langs": pick_col(["langs"], "Language bitmask"),
         "origins": pick_col(["origins"], "Origin bitmask"),
         "roles": pick_col(["roles"], "Role bitmask"),
+        "genres": pick_col(["genres"], "Genre bitmask"),
+        "content_types": pick_col(["content_types"], "Content type bitmask"),
         "graph_col": pick_col(["comp"], "Graph bitmask"),
     }
 
@@ -187,6 +193,8 @@ def get_engine_state():
         "langs": [str(x) for x in get_distinct_dim_values(schema["langs"], "dim_lang")],
         "origins": [str(x) for x in get_distinct_dim_values(schema["origins"], "dim_origin")],
         "roles": [str(x) for x in get_distinct_dim_values(schema["roles"], "dim_role")],
+        "genres": [str(x) for x in get_distinct_dim_values(schema["genres"], "dim_genre")],
+        "content_types": [str(x) for x in get_distinct_dim_values(schema["content_types"], "dim_content_type")],
         "sources": dict(zip(sources_df["source_name"], sources_df["source_id"])),
     }
 
@@ -198,6 +206,8 @@ def get_engine_state():
         "role_bits": role_bits,
         "lang_bits": lang_bits,
         "origin_bits": origin_bits,
+        "genre_bits": genre_bits,
+        "content_type_bits": content_type_bits,
         "filter_choices": filter_choices,
         "data_location": data_loc
     }
@@ -261,6 +271,8 @@ def build_filter_clauses(filters: dict) -> str:
     clauses.append(build_bitmask_clause(filters.get("langs", []), schema["langs"], engine["lang_bits"]))
     clauses.append(build_bitmask_clause(filters.get("origins", []), schema["origins"], engine["origin_bits"]))
     clauses.append(build_bitmask_clause(filters.get("roles", []), schema["roles"], engine["role_bits"]))
+    clauses.append(build_bitmask_clause(filters.get("genres", []), schema["genres"], engine["genre_bits"]))
+    clauses.append(build_bitmask_clause(filters.get("content_types", []), schema["content_types"], engine["content_type_bits"]))
 
     return " ".join(clauses)
 
@@ -455,6 +467,16 @@ selected_roles = st.sidebar.multiselect(
     options = filter_choices["roles"]
 )
 
+selected_genres = st.sidebar.multiselect(
+    label = "Genres(s)", 
+    options = filter_choices["genres"]
+)
+
+selected_content_types = st.sidebar.multiselect(
+    label = "Content Type(s)", 
+    options = filter_choices["content_types"]
+)
+
 all_sources_dict = filter_choices["sources"]
 selected_sources = st.sidebar.multiselect(
     label = "Select Sources",
@@ -472,7 +494,9 @@ current_filters = {
     "langs": selected_langs,
     "origins": selected_origins,
     "roles": selected_roles,
-    "sources": selected_sources
+    "sources": selected_sources,
+    "genres": selected_genres,
+    "content_types": selected_content_types
 }
 
 filter_sql = build_filter_clauses(current_filters)
@@ -497,8 +521,8 @@ if selected_record_type != "CONTENT":
 
 st.space()
 
-tab_source, tab_role, tab_decade, tab_lang, tab_origin = st.tabs([
-    "By Source", "By Role", "By Decade", "By Language", "By Origin"
+tab_source, tab_role, tab_decade, tab_lang, tab_origin, tab_genre, tab_content_type = st.tabs([
+    "By Source", "By Role", "By Decade", "By Language", "By Origin", "By Genre", "By Content Type"
 ])
 
 # -----------------------------------------------------------------------------
@@ -572,6 +596,37 @@ with tab_origin:
         format_summary_dataframe(
             query_dimension(con, "dim_origin", schema["origins"], filter_sql), 
             "Origin"
+        ),
+        width="stretch"
+    )
+
+# -----------------------------------------------------------------------------
+# TAB 5: BY GENRES
+# -----------------------------------------------------------------------------
+with tab_genre:
+    
+    st.subheader("Records by Genre(s)")
+
+    st.dataframe(
+        format_summary_dataframe(
+            query_dimension(con, "dim_genre", schema["genres"], filter_sql), 
+            "Genre"
+        ),
+        width="stretch"
+    )
+
+
+# -----------------------------------------------------------------------------
+# TAB 5: BY CONTENT TYPES
+# -----------------------------------------------------------------------------
+with tab_content_type:
+    
+    st.subheader("Records by Content Type(s)")
+
+    st.dataframe(
+        format_summary_dataframe(
+            query_dimension(con, "dim_content_type", schema["content_types"], filter_sql), 
+            "Content Type"
         ),
         width="stretch"
     )
